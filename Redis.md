@@ -893,4 +893,177 @@ pub
 
 ### Redis的主从	复制（Master/Slave）
 
+​	主机数据更新后根据配置和策略，自动同步到备机的master/slaver机制，master以写为主，slave以读为主
+
+​	读写分离，容灾恢复
+
+#### 配置
+
+```shell
+拷贝多个redis.conf文件
+开启daemonize
+pid文件名
+指定端口
+log文件名
+dump.rdb文件名
+```
+
+#### 实例
+
+```shell
+#配置三个redis服务，redis6379.conf，redis6380.conf，redis6381.conf
+#开启连接
+```
+
+master-6379
+
+```shell
+lov@lov:/opt/redis-5.0.3/src$ sudo ./redis-cli -p 6379
+127.0.0.1:6379> INFO replication	#查看主从信息
+# Replication
+role:master		#默认为master
+connected_slaves:0
+.............................
+127.0.0.1:6379> INFO replication	#当有从声明时，连接管理
+# Replication
+role:master
+connected_slaves:2	#连接的slave数
+slave0:ip=127.0.0.1,port=6380,state=online,offset=28,lag=1		#6380端口
+slave1:ip=127.0.0.1,port=6381,state=online,offset=28,lag=1	#6381端口
+...........................
+127.0.0.1:6379> mset k1 v1 k2 v2 k3 v3	#当在这里设置，slaves自动同步，单默认只有master有写权限
+OK
+127.0.0.1:6379> SHUTDOWN	#当master挂掉后其他的slaves会等待，直到master重启；当slave挂掉后，重启需要再配置一次
+not connected> 
+```
+
+slave-6380
+
+```shell
+lov@lov:/opt/redis-5.0.3/src$ sudo ./redis-cli -p 6380127.0.0.1:6380> INFO replication
+.......................
+127.0.0.1:6380> SLAVEOF 127.0.0.1 6379	#配置为本地6379的slave
+OK
+127.0.0.1:6380> mget k1 k2 k3	#获取同步的数据
+1) "v1"
+2) "v2"
+3) "v3"
+127.0.0.1:6380> INFO replication
+# Replication
+role:slave
+master_host:127.0.0.1
+master_port:6379
+master_link_status:up	#master连接
+.......................
+127.0.0.1:6380> INFO replication
+# Replication
+role:slave
+master_host:127.0.0.1
+master_port:6379
+master_link_status:down	#当master关闭后，连接关闭，等待master开启
+..........................
+127.0.0.1:6380> mget k1 k2 k3	#之前同步的数据依然保存
+1) "v1"
+2) "v2"
+3) "v3"
+127.0.0.1:6380> INFO replication
+# Replication
+role:slave
+master_host:127.0.0.1
+master_port:6379
+master_link_status:up	#master连起后恢复
+.............................
+127.0.0.1:6380> get k4
+"v4"
+127.0.0.1:6380> SLAVEOF no one	#将该redis服务设为master
+OK
+127.0.0.1:6380> INFO replication
+# Replication
+role:master
+connected_slaves:0
+master_replid:e89cd7cfabf0ae269ee97e3f682c179da3fb5f5e
+master_replid2:06b3d527e02e830773f819585b47fd0b669e0282
+..........................
+127.0.0.1:6380> mget k1 k2 k3	#数据存在
+1) "v1"
+2) "v2"
+3) "v3"
+```
+
+slave-6381
+
+```shell
+lov@lov:/opt/redis-5.0.3/src$ sudo ./redis-cli -p 6381
+127.0.0.1:6381> SLAVEOF 127.0.0.1 6379
+OK
+127.0.0.1:6381> mget k1 k2 k3
+1) "v1"
+2) "v2"
+3) "v3"
+127.0.0.1:6381> INFO replication
+# Replication
+role:slave
+master_host:127.0.0.1
+master_port:6379
+master_link_status:up
+................................
+127.0.0.1:6381> get k4
+"v4"
+127.0.0.1:6381> SLAVEOF 127.0.0.1 6380	#当master挂掉后，以6380为master
+OK
+127.0.0.1:6381> INFO replication
+# Replication
+role:slave
+master_host:127.0.0.1
+master_port:6380
+master_link_status:up
+..............................
+127.0.0.1:6381> get k4
+"v4"
+127.0.0.1:6381> set k5 v5	#默认只有读的权限
+(error) READONLY You can't write against a read only replica.
+```
+
+#### 复制原理
+
+​	slave启动成功连接到master后，会发送一个sync命令，master接到命令启动后台的存盘进程，同时收集所有接收到的用于修改数据集命令，在后台进程执行完毕后，master将传送整个数据文件到slave，以完成一次完全同步
+
+**全量复制**
+
+> ​	slave服务在接收到数据库文件数据后，将其存盘并加载到内存中，只要重新连接master，一次完全同步（全量复制）将被自动执行
+
+**增量复制**
+
+> ​	master继续将新的所有收集到的修改命令依次传给slave，完成同步
+
+#### 哨兵模式（sentinel）
+
+​	能够后台监控主机是否故障，如果故障了根据投票数自动将slave转为master
+
+##### 配置
+
+1、新建sentinel.conf文件
+
+```shell
+sentinel monitor host6379 127.0.0.1   6379 		1
+		(redis库名自定义)  (ip地址)	(端口号)  (票数大于1的即可被选为master)
+```
+
+2、启动哨兵
+
+```shell
+sudo ./redis-sentinel /opt/myredis/sentinel.conf  
+```
+
+> 当master挂掉后，会投票选取出新的master；
+>
+> 当挂掉的master重启后，会直接作为当前master的slave；
+>
+> 对于一组sentinel，能同时监控多个master
+
+#### 复制延迟
+
+​	由于所有的写操作都是先在master上操作，然后同步更新到slave上，所以从master到slave有一定的延迟，当系统繁忙时，延迟会更加严重，slave机器数量的增加也会使这个问题加重
+
 ### Jedis
+
