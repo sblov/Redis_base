@@ -73,7 +73,7 @@
 
 ​	最终一致性（Eventually consistent）
 
-​	通过让系统放松对某一时刻数据一致性的要求来换取系统整体伸缩性和性能上改观。由于在于大型系统往往由于地域分布和极高性能的要求，不可能采用分布式事物来完成这些指标，要想获得这些指标，必须采用另一种方式来完成，BASE就能解决这个问题。
+​	通过让系统放松对某一时刻数据一致性的要求来换取系统整体伸缩性和性能上改观。由于在于大型系统往往由于地域分布和极高性能的要求，不可能采用分布式事务来完成这些指标，要想获得这些指标，必须采用另一种方式来完成，BASE就能解决这个问题。
 
 ​	（例如淘宝双十一）
 
@@ -556,34 +556,341 @@ OK
 
 ### 解析配置文件
 
-Units单位
+#### Units单位
 
 > 配置大小单位，开头定义了一些基本的度量单位，只支持bytes，不支持bit；对大小写不敏感
 
-Includes包含
+#### Includes包含
 
 > 通过includes包含其他的配置文件
 
-General通用
+#### Modules模块
 
-Snapshotting快照
+> 加载其他模块
 
-Replication复制
+#### Network网络
 
-Security安全
+> bind、port、tcp-backlog、timeout.....
 
-Limits限制
+#### General通用
 
-Append Only Mode追加
+> 通用设置，daemonize、pidfile、loglevel、logfile、databases
 
-常见配置redis.conf
+#### Snapshotting快照
+
+> RDB持久化，dbfilename....
+
+#### Replication复制
+
+> 主从复制
+
+#### Security安全
+
+> 安全设置，requirepass
+
+```shell
+config set requirepass "..."	#redis中设置密码
+#在之后的访问操作时，都必须加上`auth "..."`
+```
+
+#### Clients客户端
+
+> 客户端连接数，maxclients默认10000
+
+#### Memory内存
+
+> 内存管理设置，maxmemory、maxmemory-policy（内存清理策略：lru，ttl...）、maxmemory-samples
+
+#### Append Only Mode追加
+
+> AOF持久化
 
 ### Redis的持久化
 
-### Redis的事物
+#### RDB
+
+##### Redis DataBase
+
+​	在指定的时间间隔内将内存中的数据集快照写入磁盘，恢复时将快照文件直接读到内存
+
+​	Redis会单独创建（fork）一个子进程来进行持久化，会先将数据写入到一个临时文件中，待持久化过程结束，再将这个临时文件替换上次持久化好的文件。整个过程中，主进程是不进行任何IO操作的，这就确保了极高的性能，如果需要进行大规模数据的恢复，且对于数据恢复完整性不是非常敏感，那RDB方式要比AOF方式更加的高效。RDB的缺点是最后一次持久化后的数据可能丢失
+
+> **Fork**
+>
+> ​	Fork的作用是复制一个与当前进程一样的进程。新进程的所有数据数值都与原进程一致，是一个全新的进程，并作为原进程的子进程
+
+##### 配置
+
+​	对应Snapshotting快照的配置
+
+```shell
+save 60 10000 #一分钟内10000数据更改时，备份一次
+stop-writes-on-bgsave-error yes	#在bgsave发生错误时停止主线程数据的写入
+rdbcompression yes	#采用LZF压缩dump.rdb文件
+rdbchecksum yes	#CRC64校验
+```
+
+##### RDB快照触发
+
+> **配置文件中快照配置**
+
+> **save或bgsave命令**
+>
+> save：只管保存，其他不管，全部阻塞
+>
+> bgsave：redis会在后台异步进行快照操作，同时还可以相应客户端请求。可以通过lastsave命令获取最后移除成功执行快照的时间
+
+> **执行flushall命令**也会产生dump.rdb文件，因为该命令，所有rdb文件是空的
+
+##### 恢复
+
+​	将备份文件（dump.rdb）移到redis安装目录并启动服务即可
+
+​	`config get dir` 	获取目录
+
+##### 优势
+
+​	适合大规模的数据恢复，对数据完整性和一致性要求不高
+
+##### 劣势
+
+​	在一定间隔时间做一次备份，所以如果redis意外down掉的话，就会丢失最后一次快照后的所有修改
+
+​	fork时，内存中的数据被克隆一份，大致2倍的膨胀性需要考虑
+
+##### 停止
+
+​	动态停止所有RDB保存规则：`redis-cli config set save “”`
+
+#### AOF
+
+##### Append Only File
+
+​	以日志的形式来记录每个写操作，将Redis执行过的所有写指令记录下来（读操作不记录），只许追加文件但不可以改写文件，redis启动之初会读取该文件重新构建数据。redis重启的话就根据日志文件的内容将写指令从前到后执行一次以完成数据的恢复工作
+
+##### 配置
+
+​	当Append Only Mode开启，会先加载appendfilename的文件，再是dump.rdb文件。当appendfile文件读取错误时，通过redis-check-aof进行语法修复（rdb对应redis-check-rdb）
+
+```shell
+appendonly no	#开启aof,默认关闭
+appendfilename "appendonly.aof"	#aof默认保持文件
+# appendfsync always	#每有一次写操作，触发一次
+appendfsync everysec	#每秒触发一次
+# appendfsync no	#不追加
+no-appendfsync-on-rewrite no	#重写时是否运行appendfsync，用默认no即可，保证数据安全性
+auto-aof-rewrite-percentage 100	#设置重写的基准值	
+auto-aof-rewrite-min-size 64mb	#设置重写的基准值
+aof-load-truncated yes
+aof-use-rdb-preamble yes
+```
+
+##### 恢复
+
+正常恢复
+
+> ​	将appendonly开启，将有数据的aof文件复制一份到对应目录，重启redis将重新加载
+
+异常恢复
+
+> ​	备份被写坏的aof文件，恢复redis-check-aof --fix进行修复，重启redis
+
+##### 重写
+
+​	AOF采用文件追加 方式，文件会越来越大，为避免出现此种情况，新增了重写机制，当AOF文件的大小超过所设定的阀值时，redis就会启动aof文件的内容压缩，只保留可以恢复数据的最小指令集，可以使用命令bgrewriteaof
+
+> **原理**
+
+​	AOF文件持续增大而过大时，会fork出一条新进程来将文件重写（先临时写文件再rename），遍历新进程的内存中数据，每条记录有一条的set语句。重写aof文件的操作，并没有读取旧aof文件，而是将整个内存中的数据库内容使用命令的方式重写了一个新的aof文件，这与快照类似
+
+> 触发机制
+
+​	redis会记录上次重写时的aof大小，默认配置是当前aof文件大小是上次rewrite后大小的一倍，且文件大于64MB时触发
+
+```shell
+auto-aof-rewrite-percentage 100	#设置重写的基准值	
+auto-aof-rewrite-min-size 64mb	#设置重写的基准值
+```
+
+##### 优势
+
+> 追加策略
+
+##### 劣势
+
+>​	相同数据集的数据而言，aof文件要远大于rdb文件，恢复速度慢于rdb
+>
+>​	aof运行效率慢于rdb，每秒同步策略效率较好，不同步效率与rdb相同
+
+#### 选择
+
+​	RDB持久化方式能够在指定的时间间隔，对数据进行快照存储
+
+​	AOF持久化方式记录每次对服务器写的操作，当服务器重启的时候会重新执行这些命令来恢复原始的数据，AOF命令以redis协议追加保存每次写的操作到文件末尾
+
+​	redis还能对aof文件进行后台重写，使aof文件的体积不至于过大
+
+**只做缓存**
+
+> ​	如果只希望数据在服务器运行的时候存在，可以不使用任何持久化方式
+
+**同时开启**
+
+> ​	在该情况下，当redis重启时会优先载入aof文件来恢复原始的数据，因为在通常情况下aof文件保存的数据要比rdb文件保存的数据要完整
+
+> ​	rdb数据不实时，同时使用两者时，服务器重启只会找aof文件。但不能只使用aof，由于rdb更时候用于备份数据库（aof在不断变化不好备份），快速重启，而且不会右aof可能存在的bug，留着以防万一
+
+#### 性能建议
+
+​	由于RDB文件用于后备，建议只在slave上持久化RDB文件，而且只有15分钟备份一次即可，只保留 `save 900 1`  这条规则
+
+​	如果enable aof，好处是在最恶劣情况下也只会丢失不超过两秒的数据，启动脚本比较简单，只load自己的aof文件即可。代价：带来持续的IO；aof rewrite的最后将rewrite过程中产生的新数据写到新文件造成的阻塞几乎是不可避免的。只要硬盘许可，应该尽量减少aof rewrite的频率，aof重写的基础大小默认值64m太小，可以设置5G以上。默认超过原大小100%大小时重写可以改到适当的数值
+
+​	如果不enable aof，仅靠master-slave replication实现高可用性也可以。能省掉大量io，也减少rewrite时带来的系统波动。代价是如果master/slave同时挂掉，会丢失十几分钟的数据，启动脚本也要比较两个Master/Slave中的RDB文件，载入较新的那个。该方式 为新浪微博架构
+
+### Redis的事务
+
+​	可以一次执行多个命令，本质是一组命令的集合。一个事务中所有命令都会序列化，按顺序的串行执行而不会被其他命令插入
+
+​	一个队列中，一次性、顺序性、排他性的执行一系列命令
+
+#### 命令
+
+```shell
+127.0.0.1:6379> multi	#开启事务	discard 取消事务 
+OK
+127.0.0.1:6379> set k1 v1	#入队列
+QUEUED
+127.0.0.1:6379> set k2 v2
+QUEUED
+127.0.0.1:6379> exec	#执行事务
+1) OK
+2) OK
+127.0.0.1:6379> get k1
+"v1"
+127.0.0.1:6379> watch k1	#监视k1，当该值在其他线程被更改时，当前线程需要取消watch(unwatch)，重新watch
+OK
+#----------------正常-----------------------------
+127.0.0.1:6379> multi 
+OK
+127.0.0.1:6379> set k1 value
+QUEUED
+127.0.0.1:6379> exec	#执行exec会直接取消watch
+1) OK
+127.0.0.1:6379> get k1
+"value"
+#--------------其它线程 set k1 oth ---------------
+127.0.0.1:6379> watch k1
+OK
+127.0.0.1:6379> multi 
+OK
+127.0.0.1:6379> set k1 vvv
+QUEUED
+127.0.0.1:6379> exec
+(nil)	#表示执行失败
+127.0.0.1:6379> get k1
+"oth"
+#127.0.0.1:6379> unwatch	#取消所有watch
+#OK
+#-----------------incr会失败------------------
+127.0.0.1:6379> multi 
+OK
+127.0.0.1:6379> set k4 v4
+QUEUED
+127.0.0.1:6379> incr k1	#执行时判断
+QUEUED
+127.0.0.1:6379> exec
+1) OK
+2) (error) ERR value is not an integer or out of range
+#---------------全部执行失败-------------------
+127.0.0.1:6379> multi 
+OK
+127.0.0.1:6379> set k1 xxx
+QUEUED
+127.0.0.1:6379> getset k2 xxx
+QUEUED
+127.0.0.1:6379> setget k2 xxx	#入队时即判断
+(error) ERR unknown command `setget`, with args beginning with: `k2`, `xxx`, 
+127.0.0.1:6379> exec
+(error) EXECABORT Transaction discarded because of previous errors.
+127.0.0.1:6379> get k2
+"v2"
+127.0.0.1:6379> get k1
+"oth"
+```
+
+悲观锁
+
+> ​	考虑每次拿数据时，有其它进程会修改，则在拿数据时上锁。传统关系型数据库的这种锁机制如：行锁、表锁、读写锁.....
+
+乐观锁
+
+> ​	 与悲观锁相反，但在更新时会判断在此期间其它进程是否更新该数据，可以使用版本号等机制。
+
+CAS（check and set）
+
+#### 总结
+
+​	watch指令，类似乐观锁，事务提交时，如果key的值已经被其它进程修改，整个事务队列都不会被执行
+
+​	通过watch在事务执行前监控多个keys，若watch后任何key的值发生改变，exec执行的事务都将被放弃，同时返回 nullmulti-bulk应答以通知调用事务者执行失败
+
+​	==单独的隔离操作（执行不会被其他命令打断）；没有隔离级别的概念（提交前不会被实际执行）；不保证原子性（没有回滚）==
 
 ### Redis的发布订阅
 
-### Redis的复制（Master/Slave）
+​	进程间的一种消息通信模式：发送者（pub）发送消息，订阅者（sub）接受消息
+
+#### 实例
+
+sub
+
+```shell
+127.0.0.1:6379> subscribe a b c	#订阅a,b,c
+Reading messages... (press Ctrl-C to quit)
+1) "subscribe"
+2) "a"
+3) (integer) 1
+1) "subscribe"
+2) "b"
+3) (integer) 2
+1) "subscribe"
+2) "c"
+3) (integer) 3	#当订阅的有新的推送时，显示
+1) "message"
+2) "a"
+3) "a1"
+1) "message"
+2) "b"
+3) "b1"
+            
+lov@lov:/opt/redis-5.0.3/src$ sudo ./redis-cli -p 6379
+[sudo] password for lov: 
+127.0.0.1:6379> psubscribe new*	#通过*通配符匹配
+Reading messages... (press Ctrl-C to quit)
+1) "psubscribe"
+2) "new*"
+3) (integer) 1
+1) "pmessage"
+2) "new*"
+3) "new1"
+4) "new1-value"
+
+```
+
+pub
+
+```shell
+127.0.0.1:6379> publish a a1	#推送消息
+(integer) 1
+127.0.0.1:6379> publish b b1
+(integer) 1
+127.0.0.1:6379> publish b b1
+(integer) 0
+127.0.0.1:6379> publish new1 new1-value
+(integer) 1
+```
+
+### Redis的主从	复制（Master/Slave）
 
 ### Jedis
