@@ -1067,3 +1067,143 @@ sudo ./redis-sentinel /opt/myredis/sentinel.conf
 
 ### Jedis
 
+#### 测试
+
+Pom.xml
+
+```xml
+<dependency>
+	    <groupId>org.apache.commons</groupId>
+	    <artifactId>commons-pool2</artifactId>
+	    <version>2.4.2</version>
+	</dependency>
+  	<!-- https://mvnrepository.com/artifact/redis.clients/jedis -->
+	<dependency>
+	    <groupId>redis.clients</groupId>
+	    <artifactId>jedis</artifactId>
+	    <version>2.9.0</version>
+	</dependency>
+```
+
+Test
+
+```java
+Jedis	jedis = new Jedis("127.0.0.1", 6379);
+System.out.println(jedis.ping());
+		
+jedis.slaveofNoOne();
+		
+jedis.set("k1", "v1");
+jedis.set("k2", "v2");
+jedis.set("k3", "v3");
+System.out.println(jedis.mget("k1","k2","k3"));
+```
+
+#### API
+
+##### 事务
+
+模拟消费
+
+```java
+public class JedisTest {
+	
+	//模拟消费
+	public boolean transMethod() throws InterruptedException {
+		//连接redis服务器
+		Jedis jedis = new Jedis("127.0.0.1",6379);
+		
+		int balance;	//可借用
+		int debt;	//贷款
+		int amount = 10;
+		
+		jedis.watch("balance");		//监控balance
+		//当其他进程 set balance
+		Thread.sleep(3000);		//模拟网络延迟
+		
+		balance = Integer.parseInt(jedis.get("balance"));
+		if (balance < amount) {		//判断balance是否够用
+			jedis.unwatch();
+			System.out.println("unenough");
+			return false;
+		}else {
+			System.out.println(".......transaction");
+			Transaction transaction = jedis.multi();
+			transaction.decrBy("balance", amount);	
+			transaction.incrBy("debt", amount);
+			
+			List<Object> exec = transaction.exec();	//事务执行
+			
+			if (exec.size() == 0) {	//，其他线程干扰，事务执行失败
+				System.out.println("transaction error");
+				return false;
+			}
+			//System.out.println(exec.size());
+			
+			balance = Integer.parseInt(jedis.get("balance"));
+			debt = Integer.parseInt(jedis.get("debt"));
+				System.out.println(".........."+balance);
+			System.out.println(".........."+debt);
+			return true;
+		}		
+	}
+	public static void main(String[] args) throws InterruptedException {
+		
+		boolean flag = new JedisTest().transMethod();
+		System.out.println(flag);	
+	}	
+}
+```
+
+##### 主从
+
+##### JedisPool
+
+jedisPoolUtil
+
+```java
+public class JedisPoolUtil {
+
+	private static volatile JedisPool jedisPool = null;
+	
+	private JedisPoolUtil() {	}
+
+	//获得连接池
+	public static JedisPool	getJedisPoolInstance() {
+		if (null == jedisPool) {
+			synchronized (JedisPoolUtil.class) {
+				if (jedisPool == null) {
+						
+					JedisPoolConfig config = new JedisPoolConfig();
+					config.setMaxIdle(32);
+					config.setMaxWaitMillis(100*1000);
+					config.setTestOnBorrow(true);
+					
+					jedisPool = new JedisPool(config,"127.0.0.1",6379);
+				}
+			}
+		}
+		
+		return jedisPool;
+	}
+
+	//释放当前连接
+	public static void release(JedisPool jedisPool,Jedis jedis) {
+		if (null !=jedis) {
+			jedisPool.returnResourceObject(jedis);
+		}
+	}
+	
+}
+```
+
+main
+
+```java
+JedisPool jedisPool = JedisPoolUtil.getJedisPoolInstance();
+		Jedis jedis = jedisPool.getResource();
+		Set<String> string = jedis.keys("*");
+		System.out.println(string);
+		JedisPoolUtil.release(jedisPool, jedis);
+```
+
